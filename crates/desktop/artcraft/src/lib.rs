@@ -4,6 +4,7 @@ use crate::core::commands::generate::generate_splat_command::generate_splat_comm
 use crate::core::commands::generate::generate_audio_command::generate_audio_command;
 use crate::core::commands::generate::generate_mesh_command::generate_mesh_command;
 pub mod core;
+pub mod mcp_bridge;
 pub mod services;
 pub mod version;
 
@@ -172,6 +173,8 @@ pub fn run() {
       //}
       let app = app.handle().clone();
       let handle = app.clone();
+      #[cfg(feature = "mcp-bridge")]
+      let app_for_bridge = app.clone();
       let root = app_data_root_2.clone();
       let env_config = app_env_configs_2.clone();
       let storyteller_creds = storyteller_creds_manager_2.clone();
@@ -203,6 +206,9 @@ pub fn run() {
           panic!("Failed to handle Tauri startup: {:?}", err);
         }
       });
+
+      #[cfg(feature = "mcp-bridge")]
+      crate::mcp_bridge::server::maybe_start(app_for_bridge);
 
       Ok(())
     })
