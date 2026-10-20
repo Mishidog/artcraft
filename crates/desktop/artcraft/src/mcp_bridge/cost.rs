@@ -32,6 +32,11 @@ pub fn video_multiplier(fields: &Map<String, Value>) -> u64 {
 
 /// Reads `cost_in_credits` from an estimate payload and compares it to the cap.
 pub fn decide(estimate_payload: &Value, multiplier: u64, cap: u64) -> CapDecision {
+  // A blank cost alone is never treated as free. Only allow it when the estimator
+  // explicitly confirms the job is free, succeeded, and reports no non-zero cost.
+  if is_confirmed_free(estimate_payload) {
+    return CapDecision::Allowed { estimated_credits: 0 };
+  }
   let unit = match estimate_payload.get("cost_in_credits") {
     Some(Value::Number(n)) => n.as_f64(),
     _ => None,
@@ -45,6 +50,52 @@ pub fn decide(estimate_payload: &Value, multiplier: u64, cap: u64) -> CapDecisio
     CapDecision::OverCap { estimated_credits, cap }
   } else {
     CapDecision::Allowed { estimated_credits }
+  }
+}
+
+fn zero_or_null(v: Option<&Value>) -> bool {
+  match v {
+    None | Some(Value::Null) => true,
+    Some(Value::Number(n)) => n.as_f64() == Some(0.0),
+    _ => false,
+  }
+}
+
+/// True only when the estimate explicitly says `is_free: true` and `success: true`,
+/// isn't rate limited, and any reported credit or USD cost is zero or absent.
+pub fn is_confirmed_free(p: &Value) -> bool {
+  p.get("is_free") == Some(&Value::Bool(true))
+    && p.get("success") == Some(&Value::Bool(true))
+    && p.get("is_rate_limited") != Some(&Value::Bool(true))
+    && zero_or_null(p.get("cost_in_credits"))
+    && zero_or_null(p.get("cost_in_usd_cents"))
+}
+
+#[cfg(test)]
+mod free_tests {
+  use super::*;
+  use serde_json::json;
+
+  #[test]
+  fn confirmed_free_is_allowed() {
+    let p = json!({"cost_in_credits": null, "cost_in_usd_cents": null, "is_free": true, "success": true, "is_rate_limited": false});
+    assert_eq!(decide(&p, 1, 10), CapDecision::Allowed { estimated_credits: 0 });
+    assert_eq!(decide(&p, 4, 0), CapDecision::Allowed { estimated_credits: 0 });
+  }
+
+  #[test]
+  fn blank_cost_without_free_flag_is_refused() {
+    assert_eq!(decide(&json!({"cost_in_credits": null, "success": true}), 1, 10), CapDecision::UnknownCost);
+    assert_eq!(decide(&json!({"cost_in_credits": null, "is_free": false, "success": true}), 1, 10), CapDecision::UnknownCost);
+    assert_eq!(decide(&json!({"cost_in_credits": null, "is_free": "true", "success": true}), 1, 10), CapDecision::UnknownCost);
+    assert_eq!(decide(&json!({"cost_in_credits": null, "is_free": true}), 1, 10), CapDecision::UnknownCost);
+    assert_eq!(decide(&json!({"cost_in_credits": null, "is_free": true, "success": true, "is_rate_limited": true}), 1, 10), CapDecision::UnknownCost);
+  }
+
+  #[test]
+  fn free_flag_with_real_cost_uses_cost() {
+    assert_eq!(decide(&json!({"cost_in_credits": 35, "is_free": true, "success": true}), 1, 10), CapDecision::OverCap { estimated_credits: 35, cap: 10 });
+    assert_eq!(decide(&json!({"cost_in_credits": null, "cost_in_usd_cents": 35, "is_free": true, "success": true}), 1, 10), CapDecision::UnknownCost);
   }
 }
 
